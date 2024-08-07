@@ -1,0 +1,20 @@
+[tool.poetry]
+name = "pygaello-ops"
+version = "0.1.0"
+description = "The wrapper package of all actions that could be performed on the neo4j graph of the Gaello X project."
+authors = ["Cephas Nukunu Soga <110126432+CephasSoga@users.noreply.github.com>"]
+license = "MIT"
+readme = "README.md"
+packages = [{include = "builder"}, {include = "queries"}, {include = "trends"}, {include = "utils_ops"}]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+spacy = "^3.7.5"
+py2neo = "^2021.2.4"
+pytrends = "^4.9.2"
+pandas = "^2.2.2"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
