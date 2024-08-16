@@ -8,10 +8,37 @@ import pandas as pd
 from pytrends.request import TrendReq
 from pytrends.exceptions import TooManyRequestsError, ResponseError
 
-from trends.static import DEFAULT_KEYWORDS, DEFAULT_CAT_ID
+from trends.static import DEFAULT_KEYWORDS, DEFAULT_CAT_ID, KEYWORDS_MAP, reload_kwds, get_next_key
 from utils_ops.logs import Logger
 
 class TrendEngine:
+    """
+    A class to manage and retrieve trends data from Google Trends.
+
+    Attributes:
+        pytrends (TrendReq): An instance of TrendReq from the pytrends library.
+        keywords (list[str]): A list of keywords to search for.
+        category_id (int): The category ID to search within.
+        delta (int): The time delta to search for.
+        timeout (int): The timeout for the search.
+        retries (int): The number of retries for the search.
+        backoff_factor (int): The backoff factor for retries.
+        logger (Logger): An instance of Logger for logging.
+
+    Methods:
+    -------
+        format_to_json(data: dict, format: str = 'records') -> dict:
+            Converts the provided dictionaries into JSON format.
+
+        retry(func: Callable[..., Any]) -> Callable[..., Any]:
+            Decorator to retry a function call with exponential backoff.
+
+        related_queries_payload() -> dict:
+            Retrieves the related queries payload for the given keywords and category.
+
+        get_trends() -> dict:
+            Retrieves and processes trends data from Google Trends.
+    """
 
     def __init__(self, keywords: list[str] = DEFAULT_KEYWORDS, category_id: int = DEFAULT_CAT_ID, delta: int = 2, hl: str = 'en-US', geo: str = None, timeout: int = None, engine_timeout: tuple[int, int] = None,  proxies: str = None, retries: int = 3, backoff_factor: int = 1) -> None:
         """
@@ -126,32 +153,67 @@ class TrendEngine:
 
     def get_trends(self) -> dict:
         """
-        Retrieves the trends related to the keywords and category specified in the object.
+        Retrieves and processes trends data from Google Trends.
 
-        This method attempts to retrieve the trends by calling the `related_queries_payload` method.
-        If a `TooManyRequestsError` is raised, the method logs an error message and sets `self.result` to None.
-        If a `ResponseError` is raised, the method logs an error message, sets `self.result` to None,
-        and raises a `ValueError` with the message "Invalid request".
-
-        If `self.result` is not None after the attempt to retrieve the trends, the method iterates over the
-        items in `self.result` and formats each value using the `format_to_json` method. The resulting
-        dictionary is stored in `parsed_result`.
+        This function attempts to fetch trends data using the related_queries_payload method.
+        If the request is rejected due to too many requests, it shrinks the keyword list and retries.
+        If the request is invalid, it attempts to rotate the keyword list. If the attempts are exhausted, it raises a ValueError.
 
         Returns:
-            dict: A dictionary containing the parsed trends data.
+            dict: A dictionary containing the parsed trends data in JSON format.
         """
         self.result = None
         try:
             self.result = self.related_queries_payload()
         except TooManyRequestsError:
-            self.logger.log("error", "Too many requests. Server rejected the request.")
-            self.result = None
+            self.logger.log("warning", "Too many requests. Server rejected the request.")
+            self.logger.log("info", "shrinking keyword list before retry")
+            try:
+                # reduce kwds list
+                self.keywords = reload_kwds()
+                # recall related_queries_payload property
+                self.result = self.related_queries_payload()
+            except TooManyRequestsError:
+                self.logger.log("error", "Too many requests. Server rejected the request.")
+                # if related_queries_payload fails again, sets self.result to None
+                self.result = None
         except ResponseError:
-            self.logger.log("error", "Invalid request. Server returned an error.")
+            self.logger.log("warning", "Invalid request. Server returned an error.")
+            self.logger.log("info", "rotating keyword list in attempt to recover")
+            success = False
+            _list = [] # store explored keys
+            iteration = 0 # init iteration
+            while not success:
+                _key = get_next_key(KEYWORDS_MAP, iteration) # get next key from the KEYWORDS_MAP dict
+                if not _key in _list:
+                    _list.append(_key)
+                self.keywords = KEYWORDS_MAP[_key] # get the value of the key and set it as the new keyword list of the class
+                print(f"keyword list: {self.keywords}")
+                try:
+                    self.result = self.related_queries_payload() # call related_queries_payload poperty
+                    success = True
+                    self.logger.log("info", "Success! recovered from invalid request")
+                    break
+                except ResponseError:
+                    # if it still fails
+                    success = False
+                    # check if all keys have been explored
+                    if len(_list) == len(KEYWORDS_MAP) and not success:
+                        self.logger.log("error", "Unable to recover from invalid request.", ValueError("Exhausted keyword list"))
+                        break
+                    # if not, continue
+                    self.logger.log("warning", "Failed to recover from invalid request. Retrying...")
+                    iteration += 1 # update iteration
+                    continue
+            
+        
+        except Exception as e: # catches all other exceptions
+            self.logger.log("error", "Uncaught exception", e)
+            # simply sets self.result to None
             self.result = None
-            raise ValueError("Invalid request")
+            raise
 
-        parsed_result = {}
+        parsed_result = {} # empty dict to store parsed data
         if self.result:
             for key, value in self.result.items():
                 parsed_result[key] = self.format_to_json(value)
@@ -160,6 +222,7 @@ class TrendEngine:
     
 
 if __name__ == "__main__":
-    engine = TrendEngine(retries=3, backoff_factor=2)
+    engine = TrendEngine(retries=3, backoff_factor=2, delta=1)
+    print(engine.keywords, engine.category_id)
     r = engine.get_trends()
     print(r)
